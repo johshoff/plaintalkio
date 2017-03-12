@@ -1,25 +1,24 @@
 extern crate futures;
-extern crate tokio_core;
 extern crate tokio_proto;
 extern crate tokio_service;
+extern crate concurrent_hashmap;
 extern crate plaintalkio;
 
 use std::io;
+use std::sync::Arc;
 use tokio_service::Service;
 use futures::{future, Future, BoxFuture};
 use plaintalkio::{Message, PlainTalkProto};
-use std::cell::RefCell;
+use concurrent_hashmap::ConcHashMap;
 
-use std::collections::HashMap;
 pub struct DictionaryService {
-    dictionary: RefCell<HashMap<Vec<u8>, Vec<u8>>>
+    dictionary: Arc<ConcHashMap<Vec<u8>, Vec<u8>>>
 }
 
 impl DictionaryService {
-    fn new() -> DictionaryService {
+    fn new(dictionary: Arc<ConcHashMap<Vec<u8>, Vec<u8>>>) -> DictionaryService {
         DictionaryService {
-            // TODO: what's the thread safety here?
-            dictionary: RefCell::new(HashMap::new())
+            dictionary: dictionary
         }
     }
 }
@@ -54,11 +53,10 @@ impl <'a> Service for DictionaryService {
             (Some(ref cmd), Some(ref word), None, None)
                 if *cmd == b"define" =>
             {
-                let dictionary = self.dictionary.borrow();
-                match dictionary.get(*word) {
+                match self.dictionary.find(*word) {
                     Some(definition) => {
                         res.fields.push(b"ok".to_vec());
-                        res.fields.push(definition.clone());
+                        res.fields.push(definition.get().clone());
                     }
                     None => {
                         res.fields.push(b"Word not defined".to_vec());
@@ -68,15 +66,14 @@ impl <'a> Service for DictionaryService {
             (Some(ref cmd), Some(ref word), Some(definition), None)
                 if *cmd == b"define" =>
             {
-                let mut dictionary = self.dictionary.borrow_mut();
-                dictionary.insert(word.to_vec(),  definition.to_vec());
+                self.dictionary.insert(word.to_vec(),  definition.to_vec());
                 res.fields.push(b"ok".to_vec());
             }
             (Some(ref cmd), None, None, None)
                 if *cmd == b"list" =>
             {
                 res.fields.push(b"ok".to_vec());
-                for (term, definition) in self.dictionary.borrow().iter() {
+                for (term, definition) in self.dictionary.iter() {
                     res.fields.push(term.clone());
                     res.fields.push(definition.clone());
                 }
@@ -104,6 +101,7 @@ use tokio_proto::TcpServer;
 fn main() {
     let addr = "0.0.0.0:12345".parse().unwrap();
     let server = TcpServer::new(PlainTalkProto, addr);
-    server.serve(|| Ok(DictionaryService::new()));
+    let dictionary = Arc::new(ConcHashMap::<Vec<u8>, Vec<u8>>::new());
+    server.serve(move || Ok(DictionaryService::new(dictionary.clone())));
 }
 
